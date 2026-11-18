@@ -32,6 +32,13 @@
   #go { background:var(--orange); color:#1a0d05; border:0; border-radius:999px; padding:18px 44px;
     font-size:20px; font-weight:900; letter-spacing:1px; box-shadow:0 8px 24px #ff7a1a66; }
   #go:disabled { opacity:.4; }
+  #handBtn { background:#ffffff14; color:var(--cream); border:2px solid var(--orange); border-radius:999px;
+    padding:10px 18px; font-size:15px; font-weight:700; }
+  #handBtn.off { border-color:#ffffff30; opacity:.7; }
+  #cam { position:absolute; left:16px; bottom:76px; width:84px; border-radius:10px; border:2px solid #fff6;
+    display:none; background:#000; }
+  #cam.flip { transform:scaleY(-1); }
+  #cam.seen { border-color:var(--orange); }
   #msg { min-height:20px; font-size:14px; color:#ffc59a; max-width:320px; }
 
   /* In-AR HUD */
@@ -66,7 +73,8 @@
   <div id="start">
     <div class="ballicon"></div>
     <h1>AR<br><span>HOOPS</span></h1>
-    <p>Float a hoop anywhere in your room, then swipe up to shoot. Longer swipe = harder throw.</p>
+    <p>Float a hoop anywhere in your room, then throw with your hand in front of the camera &mdash; or swipe up.</p>
+    <button id="handBtn">&#9995; Hand throw: ON</button>
     <button id="go">START AR</button>
     <div id="msg"></div>
   </div>
@@ -80,6 +88,7 @@
     </div>
     <div id="pop"></div>
     <div id="meter"><i></i></div>
+    <canvas id="cam"></canvas>
     <div id="hint"></div>
     <div class="bottom">
       <button id="exit">Exit</button>
@@ -91,6 +100,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { makeHoop, makeBall, stepBall, throwVelocity, BALL_R } from './sim.js';
+import { makeHandTracker, updateHand, CameraGrabber } from './hand.js';
 
 const $ = id => document.getElementById(id);
 const ui = $('ui');
@@ -101,6 +111,39 @@ try { best = +localStorage.getItem('arhoops.best') || 0; } catch (e) {}
 const saveBest = () => { try { localStorage.setItem('arhoops.best', best); } catch (e) {} };
 
 const HOOP_DIST = 2.5;   // how far in front of you the floating hoop appears while placing
+
+// ---------- hand throw (MediaPipe hand tracker on the AR camera picture) ----------
+const MP = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35';
+const HAND_MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+let handOn = true;
+try { handOn = localStorage.getItem('arhoops.hand') !== 'off'; } catch (e) {}
+let landmarker = null, handLoading = null, handError = '';
+function loadHands() {
+  if (handLoading) return handLoading;
+  handLoading = (async () => {
+    const { FilesetResolver, HandLandmarker } = await import(MP + '/vision_bundle.mjs');
+    const files = await FilesetResolver.forVisionTasks(MP + '/wasm');
+    const opts = delegate => ({
+      baseOptions: { modelAssetPath: HAND_MODEL, delegate },
+      runningMode: 'VIDEO', numHands: 1,
+      minHandDetectionConfidence: .5, minHandPresenceConfidence: .5, minTrackingConfidence: .5,
+    });
+    try { landmarker = await HandLandmarker.createFromOptions(files, opts('GPU')); }
+    catch (e) { landmarker = await HandLandmarker.createFromOptions(files, opts('CPU')); }
+    return landmarker;
+  })().catch(e => { handError = 'Hand tracker failed to load'; console.error(e); handLoading = null; });
+  return handLoading;
+}
+function showHandBtn() {
+  const b = $('handBtn'); b.innerHTML = '&#9995; Hand throw: ' + (handOn ? 'ON' : 'OFF'); b.classList.toggle('off', !handOn);
+}
+$('handBtn').onclick = () => {
+  handOn = !handOn; showHandBtn();
+  try { localStorage.setItem('arhoops.hand', handOn ? 'on' : 'off'); } catch (e) {}
+  if (handOn) loadHands();
+};
+showHandBtn();
+if (handOn) loadHands();   // start downloading the tracker while you're on the start screen
 
 // ---------- support check ----------
 (async () => {
@@ -277,6 +320,13 @@ function hud() {
   $('sScore').textContent = score; $('sShots').textContent = shots;
   $('sStreak').textContent = streak; $('sBest').textContent = best;
 }
+function playHint() {
+  if (mode !== 'play') return;
+  $('hint').textContent = handError ? handError
+    : handLive && !landmarker ? 'Loading hand tracker… (swipe up to shoot)'
+    : handLive ? 'Hold your hand up in view, then throw it at the hoop (or swipe up)'
+    : 'Swipe up to shoot';
+}
 let popTimer;
 function pop(text, sub = '') {
   const el = $('pop'); el.innerHTML = text + (sub ? `<small>${sub}</small>` : '');
@@ -285,7 +335,7 @@ function pop(text, sub = '') {
 function setMode(m) {
   mode = m;
   if (m === 'placing') { $('hint').textContent = 'Move your phone slowly over the floor first'; $('move').style.visibility = 'hidden'; }
-  if (m === 'play') { $('hint').textContent = 'Swipe up to shoot'; $('move').style.visibility = 'visible'; reticle.visible = false; }
+  if (m === 'play') { $('move').style.visibility = 'visible'; reticle.visible = false; playHint(); }
 }
 
 // ---------- start / end AR ----------
@@ -294,7 +344,7 @@ $('go').onclick = async () => {
   try {
     session = await navigator.xr.requestSession('immersive-ar', {
       requiredFeatures: ['hit-test'],
-      optionalFeatures: ['dom-overlay'],
+      optionalFeatures: handOn ? ['dom-overlay', 'camera-access'] : ['dom-overlay'],
       domOverlay: { root: ui },
     });
   } catch (e) { $('msg').textContent = 'Could not start AR: ' + (e.message || e); return; }
@@ -302,12 +352,24 @@ $('go').onclick = async () => {
   await renderer.xr.setSession(session);
   const viewer = await session.requestReferenceSpace('viewer');
   hitSource = await session.requestHitTestSource({ space: viewer });
+  // hand throw setup
+  handLive = false; tracker = makeHandTracker(); heldBall.visible = false; handError = '';
+  const camOK = handOn && session.enabledFeatures ? session.enabledFeatures.includes('camera-access') : handOn;
+  if (handOn && camOK && window.XRWebGLBinding) {
+    try {
+      const gl = renderer.getContext();
+      glBinding = new XRWebGLBinding(session, gl);
+      grabber = grabber || new CameraGrabber(gl);
+      handLive = true;
+      if (!landmarker) loadHands();
+    } catch (e) { handError = 'Hand throw unavailable: ' + e.message; }
+  } else if (handOn) handError = 'Camera access not allowed - swipe to throw';
   hoop = makeHoop(1.6); buildHoopMesh(); hoopGroup.visible = false; placed = false; floorKnown = false;
   score = shots = streak = 0; hud();
   $('start').style.display = 'none'; $('hud').style.display = 'block';
   setMode('placing');
   session.addEventListener('end', () => {
-    hitSource = null; session = null; mode = 'off';
+    hitSource = null; session = null; mode = 'off'; handLive = false; glBinding = null; $('cam').style.display = 'none';
     balls.forEach(b => { scene.remove(b.mesh, b.shadow); }); balls.length = 0;
     $('start').style.display = 'flex'; $('hud').style.display = 'none';
   });
@@ -352,10 +414,10 @@ ui.addEventListener('pointerup', e => {
 });
 ui.addEventListener('pointercancel', () => { drag = null; $('meter').style.display = 'none'; });
 
-function shoot(p, side) {
+function shoot(p, side, from) {
   camPose();
   const up = new THREE.Vector3(0, 1, 0).transformDirection(camMatrix());
-  const spawn = camPos.clone().addScaledVector(camFwd, .3).addScaledVector(up, -.12);
+  const spawn = from ? from.clone() : camPos.clone().addScaledVector(camFwd, .3).addScaledVector(up, -.12);
   const v = throwVelocity(camPos, camFwd, p, side, hoop);
   const b = makeBall(spawn, v);
   b.mesh = new THREE.Mesh(ballGeo, ballMat); b.mesh.position.copy(spawn);
@@ -368,6 +430,53 @@ function shoot(p, side) {
 function finishShot(b) {
   if (b.counted) return; b.counted = true;
   if (!b.scored) { if (streak > 0) { streak = 0; hud(); } }
+}
+
+// ---------- hand state ----------
+let handLive = false, glBinding = null, grabber = null, tracker = makeHandTracker(), frameNo = 0, lastHandMsg = '';
+const heldBall = new THREE.Mesh(ballGeo, ballMat); heldBall.visible = false; scene.add(heldBall);
+const camCanvas = $('cam'), camCtx = camCanvas.getContext('2d');
+const tmpV = new THREE.Vector3();
+// where the hand is in the picture -> a point ~45 cm in front of the phone
+function handToWorld(x, y, out) {
+  const xc = renderer.xr.getCamera();
+  const cam = xc.cameras && xc.cameras[0] ? xc.cameras[0] : camera;
+  camPose();
+  out.set(x * 2 - 1, -(y * 2 - 1), .5).unproject(cam).sub(camPos).normalize();
+  return out.multiplyScalar(.45).add(camPos);
+}
+function runHand(frame, tSec) {
+  if (!handLive || !landmarker || !glBinding || mode !== 'play') { heldBall.visible = false; return; }
+  ++frameNo;
+  const pose = frame.getViewerPose(renderer.xr.getReferenceSpace());
+  const view = pose && pose.views.find(v => v.camera);
+  if (!view) return;
+  const tex = glBinding.getCameraImage(view.camera);
+  if (!tex) return;
+  const img = grabber.grab(tex, view.camera.width, view.camera.height);
+  renderer.resetState();
+  const res = landmarker.detectForVideo(img, performance.now());
+  const lm = res && res.landmarks && res.landmarks[0];
+  const r = updateHand(tracker, tSec, lm || null);
+
+  // little camera preview so you can see what the tracker sees
+  if (frameNo % 4 === 0) {
+    if (camCanvas.width !== img.width) { camCanvas.width = img.width; camCanvas.height = img.height; }
+    camCanvas.style.display = 'block';
+    camCtx.putImageData(img, 0, 0);
+    if (lm) { camCtx.fillStyle = '#ff7a1a'; for (const p of lm) camCtx.fillRect(p.x * img.width - 2, p.y * img.height - 2, 4, 4); }
+    camCanvas.classList.toggle('flip', tracker.flipY);
+    camCanvas.classList.toggle('seen', !!lm);
+  }
+
+  if (r.event === 'hold' || r.event === 'seen') {
+    handToWorld(tracker.pos.x, tracker.pos.y, heldBall.position);
+    heldBall.visible = r.event === 'hold';
+  } else if (r.event === 'throw') {
+    const from = heldBall.visible ? heldBall.position.clone() : null;
+    heldBall.visible = false;
+    shoot(.15 + r.power * .85, r.side, from);
+  } else heldBall.visible = false;
 }
 
 // ---------- loop ----------
@@ -441,6 +550,12 @@ renderer.setAnimationLoop((t, frame) => {
   }
   animateNet(dt);
   renderer.render(scene, camera);
+  if (frame && handLive) {
+    try { runHand(frame, t / 1000); }
+    catch (e) { console.error(e); handLive = false; handError = 'Hand throw stopped: ' + e.message; heldBall.visible = false; renderer.resetState(); }
+  }
+  const msg = handError + '|' + !!landmarker + '|' + handLive;
+  if (msg !== lastHandMsg) { lastHandMsg = msg; playHint(); }
 });
 hud();
 </script>
