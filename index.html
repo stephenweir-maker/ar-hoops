@@ -29,11 +29,6 @@
     border:3px solid #1a0d05; clip-path: inset(0 47% 0 47%); }
   .ballicon::after { clip-path: inset(47% 0 47% 0); }
   #start p { margin:0; max-width:340px; opacity:.85; line-height:1.4; font-size:16px; }
-  .heights { display:flex; gap:8px; }
-  .heights button { background:#ffffff14; color:var(--cream); border:2px solid #ffffff30;
-    border-radius:12px; padding:10px 14px; font-size:15px; font-weight:600; }
-  .heights button.on { border-color:var(--orange); background:#ff7a1a33; }
-  .heights small { display:block; font-weight:400; opacity:.7; font-size:12px; }
   #go { background:var(--orange); color:#1a0d05; border:0; border-radius:999px; padding:18px 44px;
     font-size:20px; font-weight:900; letter-spacing:1px; box-shadow:0 8px 24px #ff7a1a66; }
   #go:disabled { opacity:.4; }
@@ -71,12 +66,7 @@
   <div id="start">
     <div class="ballicon"></div>
     <h1>AR<br><span>HOOPS</span></h1>
-    <p>Put a hoop on your real floor, then swipe up to shoot. Longer swipe = harder throw.</p>
-    <div class="heights">
-      <button data-h="1.2">Low<small>1.2 m</small></button>
-      <button data-h="1.6" class="on">Mid<small>1.6 m</small></button>
-      <button data-h="2.2">High<small>2.2 m</small></button>
-    </div>
+    <p>Float a hoop anywhere in your room, then swipe up to shoot. Longer swipe = harder throw.</p>
     <button id="go">START AR</button>
     <div id="msg"></div>
   </div>
@@ -100,7 +90,7 @@
 
 <script type="module">
 import * as THREE from 'three';
-import { makeHoop, makeBall, stepBall, throwVelocity, faceToward, BALL_R } from './sim.js';
+import { makeHoop, makeBall, stepBall, throwVelocity, BALL_R } from './sim.js';
 
 const $ = id => document.getElementById(id);
 const ui = $('ui');
@@ -110,12 +100,7 @@ let best = 0;
 try { best = +localStorage.getItem('arhoops.best') || 0; } catch (e) {}
 const saveBest = () => { try { localStorage.setItem('arhoops.best', best); } catch (e) {} };
 
-// ---------- height choice ----------
-let rimH = 1.6;
-document.querySelectorAll('.heights button').forEach(b => b.onclick = () => {
-  document.querySelectorAll('.heights button').forEach(x => x.classList.remove('on'));
-  b.classList.add('on'); rimH = +b.dataset.h;
-});
+const HOOP_DIST = 2.5;   // how far in front of you the floating hoop appears while placing
 
 // ---------- support check ----------
 (async () => {
@@ -174,44 +159,35 @@ const ballGeo = new THREE.SphereGeometry(BALL_R, 32, 20);
 const ballMat = new THREE.MeshStandardMaterial({ map: ballTex(), roughness: .75 });
 
 // ---------- hoop model ----------
-let hoop = makeHoop(rimH);
-const hoopGroup = new THREE.Group(); scene.add(hoopGroup);
+let hoop = makeHoop(1.6);
+const hoopGroup = new THREE.Group(); scene.add(hoopGroup);   // sits on the floor, turned to face you
+const rimGroup = new THREE.Group(); hoopGroup.add(rimGroup);  // everything floating, origin at rim height
 let netLines, netBase, netPulse = 0;
 
 function buildHoopMesh() {
-  hoopGroup.clear();
+  rimGroup.clear(); hoopGroup.clear(); hoopGroup.add(rimGroup);
   const h = hoop;
-  const metal = new THREE.MeshStandardMaterial({ color: 0x2b2f36, metalness: .6, roughness: .4 });
   const orange = new THREE.MeshStandardMaterial({ color: 0xff5a10, metalness: .3, roughness: .35, emissive: 0x401000 });
   const glass = new THREE.MeshStandardMaterial({ color: 0xffffff, transparent: true, opacity: .55, roughness: .1 });
-
-  // base + pole + arm
-  const base = new THREE.Mesh(new THREE.BoxGeometry(.5, .08, .6), metal);
-  base.position.set(0, .04, h.poleZ - .05); hoopGroup.add(base);
-  const poleTop = h.boardBottom + .3;
-  const pole = new THREE.Mesh(new THREE.CylinderGeometry(h.poleR, h.poleR, poleTop, 16), metal);
-  pole.position.set(0, poleTop / 2, h.poleZ); hoopGroup.add(pole);
-  const arm = new THREE.Mesh(new THREE.BoxGeometry(.08, .08, -h.poleZ - h.boardT), metal);
-  arm.position.set(0, poleTop, (h.poleZ - h.boardT) / 2); hoopGroup.add(arm);
+  const boardBottom = h.boardBottom - h.rimH;   // relative to the rim
 
   // backboard
   const board = new THREE.Mesh(new THREE.BoxGeometry(h.boardW, h.boardH, h.boardT), glass);
-  board.position.set(0, h.boardBottom + h.boardH / 2, -h.boardT / 2); hoopGroup.add(board);
-  const edgeMat = new THREE.LineBasicMaterial({ color: 0xffffff });
-  const edge = new THREE.LineSegments(new THREE.EdgesGeometry(board.geometry), edgeMat);
-  edge.position.copy(board.position); hoopGroup.add(edge);
+  board.position.set(0, boardBottom + h.boardH / 2, -h.boardT / 2); rimGroup.add(board);
+  const edge = new THREE.LineSegments(new THREE.EdgesGeometry(board.geometry), new THREE.LineBasicMaterial({ color: 0xffffff }));
+  edge.position.copy(board.position); rimGroup.add(edge);
   // shooter's square
   const sq = new THREE.Group();
   const sqW = .48, sqH = .36, bar = .025, red = new THREE.MeshBasicMaterial({ color: 0xff3b1a });
   const mk = (w, ht, x, y) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(w, ht), red); m.position.set(x, y, .001); sq.add(m); };
   mk(sqW, bar, 0, sqH); mk(sqW, bar, 0, 0); mk(bar, sqH, -sqW / 2, sqH / 2); mk(bar, sqH, sqW / 2, sqH / 2);
-  sq.position.set(0, h.rimH + .02, 0); hoopGroup.add(sq);
+  sq.position.set(0, .02, 0); rimGroup.add(sq);
 
   // rim + bracket
   const rim = new THREE.Mesh(new THREE.TorusGeometry(h.R, h.tube * 1.4, 10, 48), orange);
-  rim.rotation.x = Math.PI / 2; rim.position.set(0, h.rimH, h.rimZ); hoopGroup.add(rim);
+  rim.rotation.x = Math.PI / 2; rim.position.set(0, 0, h.rimZ); rimGroup.add(rim);
   const br = new THREE.Mesh(new THREE.BoxGeometry(.12, .03, h.rimZ - h.R), orange);
-  br.position.set(0, h.rimH, (h.rimZ - h.R) / 2); hoopGroup.add(br);
+  br.position.set(0, 0, (h.rimZ - h.R) / 2); rimGroup.add(br);
 
   // net (line lattice)
   const strands = 14, levels = 5, depth = .42;
@@ -232,14 +208,16 @@ function buildHoopMesh() {
   ng.setAttribute('position', new THREE.Float32BufferAttribute(netBase.flat(), 3));
   ng.setIndex(idx);
   netLines = new THREE.LineSegments(ng, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: .9 }));
-  netLines.position.set(0, h.rimH, h.rimZ); hoopGroup.add(netLines);
+  netLines.position.set(0, 0, h.rimZ); rimGroup.add(netLines);
 
-  const sh = new THREE.Mesh(shadowGeo, shadowMat); sh.scale.set(1.1, 1, 1.3);
-  sh.position.set(0, .003, h.poleZ * .3); hoopGroup.add(sh);
+  // faint shadow on the real floor under the hoop
+  const sh = new THREE.Mesh(shadowGeo, shadowMat); sh.scale.set(1.0, 1, .8);
+  sh.position.set(0, .003, h.rimZ * .6); hoopGroup.add(sh);
 }
 function placeHoopGroup() {
   hoopGroup.position.set(hoop.x, hoop.floorY, hoop.z);
   hoopGroup.rotation.set(0, hoop.yaw, 0);
+  rimGroup.position.y = hoop.rimH;
 }
 function animateNet(dt) {
   if (!netLines) return;
@@ -290,7 +268,7 @@ const sfx = {
 
 // ---------- game state ----------
 let mode = 'off';           // off | placing | play
-let placed = false, haveReticle = false;
+let placed = false, haveReticle = false, floorKnown = false, floorY = 0;
 let score = 0, shots = 0, streak = 0;
 const balls = [];
 let hitSource = null, session = null;
@@ -306,7 +284,7 @@ function pop(text, sub = '') {
 }
 function setMode(m) {
   mode = m;
-  if (m === 'placing') { $('hint').textContent = 'Move your phone slowly to find the floor, then tap to place the hoop'; $('move').style.visibility = 'hidden'; }
+  if (m === 'placing') { $('hint').textContent = 'Move your phone slowly over the floor first'; $('move').style.visibility = 'hidden'; }
   if (m === 'play') { $('hint').textContent = 'Swipe up to shoot'; $('move').style.visibility = 'visible'; reticle.visible = false; }
 }
 
@@ -324,7 +302,7 @@ $('go').onclick = async () => {
   await renderer.xr.setSession(session);
   const viewer = await session.requestReferenceSpace('viewer');
   hitSource = await session.requestHitTestSource({ space: viewer });
-  hoop = makeHoop(rimH); buildHoopMesh(); hoopGroup.visible = false; placed = false;
+  hoop = makeHoop(1.6); buildHoopMesh(); hoopGroup.visible = false; placed = false; floorKnown = false;
   score = shots = streak = 0; hud();
   $('start').style.display = 'none'; $('hud').style.display = 'block';
   setMode('placing');
@@ -364,7 +342,7 @@ ui.addEventListener('pointerup', e => {
   if (!drag) return; const d = drag; drag = null; $('meter').style.display = 'none';
   const moved = Math.hypot(d.x - d.x0, d.y - d.y0);
   if (mode === 'placing') {
-    if (moved < 25 && haveReticle) {
+    if (moved < 25 && floorKnown) {
       placed = true; hoopGroup.visible = true; setMode('play');
       tone(440, .1, 'triangle', .15); setTimeout(() => tone(660, .12, 'triangle', .15), 90);
     }
@@ -399,6 +377,7 @@ renderer.setAnimationLoop((t, frame) => {
   const dt = Math.min(.05, last ? (t - last) / 1000 : 1 / 60); last = t;
 
   if (frame && hitSource && mode === 'placing') {
+    // 1) keep finding the real floor (the ball bounces on it)
     const res = frame.getHitTestResults(hitSource);
     haveReticle = false;
     if (res.length) {
@@ -410,16 +389,29 @@ renderer.setAnimationLoop((t, frame) => {
           haveReticle = true;
           reticle.matrix.copy(tmpM);
           tmpM.decompose(tmpP, tmpQ, tmpS);
-          camPose();
-          hoop.x = tmpP.x; hoop.z = tmpP.z; hoop.floorY = tmpP.y;
-          faceToward(hoop, camPos.x, camPos.z);
-          placeHoopGroup(); hoopGroup.visible = true;
+          // keep the lowest flat surface seen (tables shouldn't lift the floor much)
+          floorY = !floorKnown ? tmpP.y : tmpP.y < floorY ? tmpP.y : floorY + (tmpP.y - floorY) * .01;
+          floorKnown = true;
         }
       }
     }
     reticle.visible = haveReticle;
-    if (!haveReticle && !placed) hoopGroup.visible = false;
-    $('hint').textContent = haveReticle ? 'Tap to place the hoop here' : 'Move your phone slowly to find the floor…';
+    // 2) the hoop floats where you point, a couple of metres away
+    if (floorKnown) {
+      camPose();
+      tmpP.copy(camPos).addScaledVector(camFwd, HOOP_DIST);
+      const rimY = Math.max(floorY + .8, tmpP.y);
+      hoop = Object.assign(makeHoop(rimY - floorY), { floorY });
+      const yaw = Math.atan2(camPos.x - tmpP.x, camPos.z - tmpP.z);
+      hoop.yaw = yaw;
+      hoop.x = tmpP.x - Math.sin(yaw) * hoop.rimZ;    // so the rim centre sits on the aim point
+      hoop.z = tmpP.z - Math.cos(yaw) * hoop.rimZ;
+      placeHoopGroup(); hoopGroup.visible = true;
+      $('hint').textContent = 'Point where you want the hoop, then tap';
+    } else {
+      if (!placed) hoopGroup.visible = false;
+      $('hint').textContent = 'Move your phone slowly over the floor first…';
+    }
   }
 
   for (let i = balls.length - 1; i >= 0; i--) {

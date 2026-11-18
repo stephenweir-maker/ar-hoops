@@ -14,6 +14,7 @@ export function makeHoop(rimH = 1.6) {
     boardW: 1.0, boardH: 0.66, boardT: 0.03,
     boardBottom: rimH - 0.14,
     poleZ: -0.32, poleR: 0.05,
+    stand: false,               // floating hoop: no pole to hit
   };
 }
 
@@ -177,7 +178,7 @@ function subStep(b, h, dt, ev) {
     const dx = l.x, dz = l.z - h.poleZ;
     const d = Math.hypot(dx, dz);
     const minD = r + h.poleR;
-    if (l.y < h.boardBottom + 0.1 && d < minD && d > 1e-6) {
+    if (h.stand && l.y < h.boardBottom + 0.1 && d < minD && d > 1e-6) {
       const nx = dx / d, nz = dz / d;
       l.x = nx * minD; l.z = h.poleZ + nz * minD;
       const vn = lv.x * nx + lv.z * nz;
