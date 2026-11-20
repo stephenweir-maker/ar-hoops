@@ -53,7 +53,7 @@ export function updateHand(st, t, lm) {
     grow = (size - ref.size) / ref.size / dt;
   }
   const speed = Math.hypot(vx, vup);
-  const still = speed < 0.6 && Math.abs(grow) < 0.9;
+  const still = speed < 0.9 && Math.abs(grow) < 1.5;
 
   if (still) {
     // learn picture orientation only while the hand is held still

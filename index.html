@@ -35,10 +35,12 @@
   #handBtn { background:#ffffff14; color:var(--cream); border:2px solid var(--orange); border-radius:999px;
     padding:10px 18px; font-size:15px; font-weight:700; }
   #handBtn.off { border-color:#ffffff30; opacity:.7; }
-  #cam { position:absolute; left:16px; bottom:76px; width:84px; border-radius:10px; border:2px solid #fff6;
+  #cam { position:absolute; left:16px; top:calc(max(14px, env(safe-area-inset-top)) + 64px); width:84px; border-radius:10px; border:2px solid #fff6;
     display:none; background:#000; }
   #cam.flip { transform:scaleY(-1); }
   #cam.seen { border-color:var(--orange); }
+  #hstat { position:absolute; left:16px; right:16px; bottom:max(64px, calc(env(safe-area-inset-bottom) + 50px)); display:none;
+    font-size:12px; font-weight:600; text-shadow:0 1px 3px #000; text-align:right; pointer-events:none; }
   #msg { min-height:20px; font-size:14px; color:#ffc59a; max-width:320px; }
 
   /* In-AR HUD */
@@ -89,6 +91,7 @@
     <div id="pop"></div>
     <div id="meter"><i></i></div>
     <canvas id="cam"></canvas>
+    <div id="hstat"></div>
     <div id="hint"></div>
     <div class="bottom">
       <button id="exit">Exit</button>
@@ -445,19 +448,26 @@ function handToWorld(x, y, out) {
   out.set(x * 2 - 1, -(y * 2 - 1), .5).unproject(cam).sub(camPos).normalize();
   return out.multiplyScalar(.45).add(camPos);
 }
+// what the hand-throw system is doing, shown on screen so problems are easy to spot
+const hs = { cam: 'waiting', hand: false };
+function handStatusText() {
+  const tr = landmarker ? 'ready' : handError && !handLive ? 'off' : handLoading ? 'loading' : 'failed';
+  const cam = !handLive ? (handError || 'off') : hs.cam;
+  return 'Tracker: ' + tr + '  ·  Camera: ' + cam + '  ·  Hand: ' + (hs.hand ? 'seen' : 'not seen');
+}
 function runHand(frame, tSec) {
-  if (!handLive || !landmarker || !glBinding || mode !== 'play') { heldBall.visible = false; return; }
+  if (!handLive || !glBinding || mode !== 'play') { heldBall.visible = false; return; }
   ++frameNo;
   const pose = frame.getViewerPose(renderer.xr.getReferenceSpace());
   const view = pose && pose.views.find(v => v.camera);
-  if (!view) return;
-  const tex = glBinding.getCameraImage(view.camera);
-  if (!tex) return;
+  const tex = view ? glBinding.getCameraImage(view.camera) : null;
+  if (!tex) { hs.cam = 'no picture from camera'; hs.hand = false; heldBall.visible = false; return; }
+  hs.cam = 'ok';
   const img = grabber.grab(tex, view.camera.width, view.camera.height);
   renderer.resetState();
-  const res = landmarker.detectForVideo(img, performance.now());
+  const res = landmarker ? landmarker.detectForVideo(img, performance.now()) : null;
   const lm = res && res.landmarks && res.landmarks[0];
-  const r = updateHand(tracker, tSec, lm || null);
+  hs.hand = !!lm;
 
   // little camera preview so you can see what the tracker sees
   if (frameNo % 4 === 0) {
@@ -468,10 +478,13 @@ function runHand(frame, tSec) {
     camCanvas.classList.toggle('flip', tracker.flipY);
     camCanvas.classList.toggle('seen', !!lm);
   }
+  if (!landmarker) return;
 
-  if (r.event === 'hold' || r.event === 'seen') {
+  const r = updateHand(tracker, tSec, lm || null);
+  if ((r.event === 'hold' || r.event === 'seen') && tracker.pos) {
+    // the ball sits in your hand as soon as the hand is spotted
     handToWorld(tracker.pos.x, tracker.pos.y, heldBall.position);
-    heldBall.visible = r.event === 'hold';
+    heldBall.visible = true;
   } else if (r.event === 'throw') {
     const from = heldBall.visible ? heldBall.position.clone() : null;
     heldBall.visible = false;
@@ -556,6 +569,11 @@ renderer.setAnimationLoop((t, frame) => {
   }
   const msg = handError + '|' + !!landmarker + '|' + handLive;
   if (msg !== lastHandMsg) { lastHandMsg = msg; playHint(); }
+  const st = $('hstat');
+  if (mode === 'play' && handOn) {
+    st.style.display = 'block';
+    if (frameNo % 6 === 0 || !handLive) { const txt = handStatusText(); if (st.textContent !== txt) st.textContent = txt; }
+  } else st.style.display = 'none';
 });
 hud();
 </script>
